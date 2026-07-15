@@ -6,6 +6,9 @@ on:
     - cron: '0 */6 * * *'        # 每 6 小时运行一次
   workflow_dispatch:              # 支持手动触发
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -14,7 +17,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0           # 获取完整历史，便于合并
+          fetch-depth: 0
 
       - name: Configure git
         run: |
@@ -25,48 +28,41 @@ jobs:
         run: |
           git remote add upstream https://github.com/free-nodes/v2rayfree.git
           git fetch upstream
-          # 合并上游 main 分支（首次需要 --allow-unrelated-histories）
-          # 采用 -X theirs 在冲突时自动使用上游版本
           git merge upstream/main --allow-unrelated-histories --no-edit -X theirs || {
             echo "Merge failed, please check conflicts manually."
             exit 1
           }
 
-      - name: Find latest v20 file and copy to 'last'
+      - name: Find latest v20 file (by name descending) and copy to 'last'
         run: |
-          # 查找所有以 v20 开头的文件（包括子目录）
-          files=$(find . -name "v20*" -type f ! -path "./.git/*")
-          if [ -z "$files" ]; then
-            echo "No v20* files found, exiting."
+          # 仅查找根目录下的 v20* 文件（非子目录）
+          shopt -s nullglob
+          files=(v20*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No v20* files found in root directory, exiting."
             exit 1
           fi
 
-          latest_file=""
-          latest_time=0
-          # 对每个文件获取其最后一次提交的时间戳
-          for file in $files; do
-            timestamp=$(git log -1 --format=%ct -- "$file" 2>/dev/null)
-            if [ -z "$timestamp" ]; then
-              # 若文件无提交历史（新文件），使用当前时间
-              timestamp=$(date +%s)
-            fi
-            if [ "$timestamp" -gt "$latest_time" ]; then
-              latest_time=$timestamp
-              latest_file="$file"
-            fi
-          done
+          # 按文件名递减排序（字典序降序），取第一个
+          IFS=$'\n' sorted=($(sort -r <<<"${files[*]}"))
+          latest_file="${sorted[0]}"
 
-          echo "Latest file: $latest_file"
-          # 复制到仓库根目录，文件名 last（覆盖已存在的）
-          cp "$latest_file" last
+          # 确保是普通文件（防止排序包含目录）
+          if [ ! -f "$latest_file" ]; then
+            echo "Selected item is not a regular file, exiting."
+            exit 1
+          fi
+
+          echo "Latest file (by name descending): $latest_file"
+          # 复制到根目录并强制覆盖
+          cp -f "$latest_file" last
           git add last
 
       - name: Commit and push changes
         run: |
-          # 检查是否有变更（包括 last 文件和合并后的变动）
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
             git commit -m "Update last file from latest v20* file [skip ci]"
-            git push origin HEAD:main
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/hansomgar/v2rayfree.git HEAD:main
           fi
