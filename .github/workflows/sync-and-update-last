@@ -1,0 +1,72 @@
+# .github/workflows/sync-and-update-last.yml
+name: Sync and Update Last
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'        # 每 6 小时运行一次
+  workflow_dispatch:              # 支持手动触发
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout own repository
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0           # 获取完整历史，便于合并
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream repository
+        run: |
+          git remote add upstream https://github.com/free-nodes/v2rayfree.git
+          git fetch upstream
+          # 合并上游 main 分支（首次需要 --allow-unrelated-histories）
+          # 采用 -X theirs 在冲突时自动使用上游版本
+          git merge upstream/main --allow-unrelated-histories --no-edit -X theirs || {
+            echo "Merge failed, please check conflicts manually."
+            exit 1
+          }
+
+      - name: Find latest v20 file and copy to 'last'
+        run: |
+          # 查找所有以 v20 开头的文件（包括子目录）
+          files=$(find . -name "v20*" -type f ! -path "./.git/*")
+          if [ -z "$files" ]; then
+            echo "No v20* files found, exiting."
+            exit 1
+          fi
+
+          latest_file=""
+          latest_time=0
+          # 对每个文件获取其最后一次提交的时间戳
+          for file in $files; do
+            timestamp=$(git log -1 --format=%ct -- "$file" 2>/dev/null)
+            if [ -z "$timestamp" ]; then
+              # 若文件无提交历史（新文件），使用当前时间
+              timestamp=$(date +%s)
+            fi
+            if [ "$timestamp" -gt "$latest_time" ]; then
+              latest_time=$timestamp
+              latest_file="$file"
+            fi
+          done
+
+          echo "Latest file: $latest_file"
+          # 复制到仓库根目录，文件名 last（覆盖已存在的）
+          cp "$latest_file" last
+          git add last
+
+      - name: Commit and push changes
+        run: |
+          # 检查是否有变更（包括 last 文件和合并后的变动）
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update last file from latest v20* file [skip ci]"
+            git push origin HEAD:main
+          fi
